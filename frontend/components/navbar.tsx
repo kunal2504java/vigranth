@@ -1,5 +1,6 @@
 "use client"
 
+import Link from "next/link"
 import { Inbox } from "lucide-react"
 import { motion } from "framer-motion"
 import { ThemeToggle } from "@/components/theme-toggle"
@@ -51,19 +52,20 @@ export function Navbar() {
             className="flex items-center gap-4"
           >
             <ThemeToggle />
-            <a
-              href="#"
+            <Link
+              href="/auth"
               className="hidden sm:block text-xs font-mono tracking-widest uppercase text-muted-foreground hover:text-foreground transition-colors duration-200"
             >
               Log In
-            </a>
-            <motion.button
-              whileHover={{ scale: 1.02 }}
-              whileTap={{ scale: 0.98 }}
-              className="bg-foreground text-background px-4 py-2 text-xs font-mono tracking-widest uppercase"
-            >
-              Get Started
-            </motion.button>
+            </Link>
+            <motion.div whileHover={{ scale: 1.02 }} whileTap={{ scale: 0.98 }}>
+              <Link
+                href="/auth"
+                className="block bg-foreground text-background px-4 py-2 text-xs font-mono tracking-widest uppercase"
+              >
+                Get Started
+              </Link>
+            </motion.div>
           </motion.div>
         </div>
       </nav>

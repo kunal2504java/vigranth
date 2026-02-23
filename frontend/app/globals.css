@@ -115,3 +115,28 @@
 .animate-blink {
   animation: blink 1s step-end infinite;
 }
+
+/* Message highlight flash (new WebSocket message) */
+@keyframes highlight-flash {
+  0% { background-color: hsl(20 90% 50% / 0.15); }
+  100% { background-color: transparent; }
+}
+
+.animate-highlight-flash {
+  animation: highlight-flash 1.5s ease-out;
+}
+
+/* Smooth line-clamp for message previews */
+.line-clamp-1 {
+  display: -webkit-box;
+  -webkit-line-clamp: 1;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.line-clamp-2 {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}

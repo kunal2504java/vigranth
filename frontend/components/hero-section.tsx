@@ -1,5 +1,6 @@
 "use client"
 
+import Link from "next/link"
 import { WorkflowDiagram } from "@/components/workflow-diagram"
 import { ArrowRight } from "lucide-react"
 import { motion } from "framer-motion"
@@ -52,27 +53,25 @@ export function HeroSection() {
         </motion.p>
 
         {/* CTA Button */}
-        <motion.button
+        <motion.div
           initial={{ opacity: 0, y: 10 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ duration: 0.5, delay: 0.6, ease }}
           whileHover={{ scale: 1.03 }}
           whileTap={{ scale: 0.97 }}
-          className="group flex items-center gap-0 bg-foreground text-background text-sm font-mono tracking-wider uppercase"
         >
-          <span className="flex items-center justify-center w-10 h-10 bg-[#ea580c]">
-            <motion.span
-              className="inline-flex"
-              whileHover={{ x: 3 }}
-              transition={{ type: "spring", stiffness: 400, damping: 20 }}
-            >
+          <Link
+            href="/auth"
+            className="group flex items-center gap-0 bg-foreground text-background text-sm font-mono tracking-wider uppercase"
+          >
+            <span className="flex items-center justify-center w-10 h-10 bg-[#ea580c]">
               <ArrowRight size={16} strokeWidth={2} className="text-background" />
-            </motion.span>
-          </span>
-          <span className="px-5 py-2.5">
-            Get Started Free
-          </span>
-        </motion.button>
+            </span>
+            <span className="px-5 py-2.5">
+              Get Started Free
+            </span>
+          </Link>
+        </motion.div>
       </div>
     </section>
   )

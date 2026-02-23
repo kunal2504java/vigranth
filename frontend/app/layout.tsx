@@ -2,6 +2,8 @@ import type { Metadata, Viewport } from 'next'
 import { JetBrains_Mono } from 'next/font/google'
 import { GeistPixelGrid } from 'geist/font/pixel'
 import { ThemeProvider } from '@/components/theme-provider'
+import { StoreProvider } from '@/lib/store'
+import { Toaster } from '@/components/ui/sonner'
 
 import './globals.css'
 
@@ -81,9 +83,17 @@ export default function RootLayout({
   return (
     <html lang="en" className={`${jetbrainsMono.variable} ${GeistPixelGrid.variable}`} suppressHydrationWarning>
       <body className="font-mono antialiased">
-        <ThemeProvider attribute="class" defaultTheme="light" enableSystem={false} disableTransitionOnChange>
-          {children}
-        </ThemeProvider>
+        <StoreProvider>
+          <ThemeProvider attribute="class" defaultTheme="light" enableSystem={false} disableTransitionOnChange>
+            {children}
+            <Toaster
+              position="bottom-right"
+              toastOptions={{
+                className: "font-mono border-2 border-foreground text-xs tracking-wider",
+              }}
+            />
+          </ThemeProvider>
+        </StoreProvider>
       </body>
     </html>
   )
