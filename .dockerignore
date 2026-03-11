@@ -1,0 +1,64 @@
+# Node / Frontend — never needed in the Python backend image
+frontend/node_modules/
+frontend/.next/
+frontend/.turbo/
+frontend/dist/
+frontend/build/
+frontend/out/
+
+# Python cache
+__pycache__/
+**/__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+
+# Virtual environments
+venv/
+.venv/
+env/
+.env/
+
+# Eggs / build artifacts
+*.egg-info/
+*.egg
+dist/
+build/
+.eggs/
+
+# Git
+.git/
+.gitignore
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# ChromaDB local data
+chroma_data/
+
+# Test / coverage
+htmlcov/
+.coverage
+.coverage.*
+.pytest_cache/
+
+# Docker compose override
+docker-compose.override.yml
+
+# Docs / specs (not needed at runtime)
+*.md
+REQUIREMENTS.md
+UnifyInbox_PRD.md
+UnifyInbox_Architecture.md
+UnifyInbox_Integration_Spec.md

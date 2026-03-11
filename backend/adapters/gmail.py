@@ -11,7 +11,7 @@ From Integration Spec Section 1.2:
 import base64
 import logging
 import re
-from datetime import datetime
+from datetime import datetime, timezone
 from email.mime.text import MIMEText
 from typing import Optional
 from uuid import uuid4
@@ -118,7 +118,7 @@ class GmailAdapter(PlatformAdapter):
                 email=sender_email,
             ),
             content_text=body,
-            timestamp=headers.get("date", datetime.utcnow().isoformat()),
+            timestamp=headers.get("date", datetime.now(timezone.utc).isoformat()),
         )
 
     async def send_message(

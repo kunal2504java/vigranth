@@ -22,17 +22,24 @@ settings = get_settings()
 
 
 def _run_async(coro):
-    """Helper to run async code in a sync Celery task."""
+    """
+    Run async code in a sync Celery task.
+
+    Creates a fresh event loop each time AND disposes the SQLAlchemy
+    engine pool afterward, so connections don't leak across loops.
+    """
+    loop = asyncio.new_event_loop()
     try:
-        loop = asyncio.get_event_loop()
-        if loop.is_running():
-            # Create a new loop if the current one is running
-            import concurrent.futures
-            with concurrent.futures.ThreadPoolExecutor() as pool:
-                return pool.submit(asyncio.run, coro).result()
         return loop.run_until_complete(coro)
-    except RuntimeError:
-        return asyncio.run(coro)
+    finally:
+        # Dispose the engine pool to prevent "attached to a different loop"
+        # errors on subsequent Celery task invocations.
+        try:
+            from backend.core.database import engine
+            loop.run_until_complete(engine.dispose())
+        except Exception:
+            pass
+        loop.close()
 
 
 # --- Main sync tasks ---
@@ -99,6 +106,9 @@ async def _async_sync_all_users():
                 }
                 if cred.refresh_token:
                     decrypted_creds["refresh_token"] = decrypt_token(cred.refresh_token)
+                # Telegram Client API uses Telethon session string
+                if cred.platform == "telegram":
+                    decrypted_creds["session"] = decrypted_creds["access_token"]
 
                 # Fetch new messages
                 raw_messages = await adapter.fetch_new_messages(
@@ -114,12 +124,42 @@ async def _async_sync_all_users():
                         for raw in raw_messages
                     ]
 
-                    # Run through AI pipeline
-                    await run_pipeline_batch(states, db, max_concurrent=3)
+                    # Filter out messages that already exist (avoid duplicate key errors)
+                    from backend.models.database import Message
+                    platform_val = cred.platform
+                    existing_ids_result = await db.execute(
+                        select(Message.platform_message_id).where(
+                            Message.user_id == cred.user_id,
+                            Message.platform == platform_val,
+                            Message.platform_message_id.in_(
+                                [s.platform_message_id for s in states]
+                            ),
+                        )
+                    )
+                    existing_ids = {row[0] for row in existing_ids_result.all()}
+                    new_states = [
+                        s for s in states
+                        if s.platform_message_id not in existing_ids
+                    ]
+
+                    if new_states:
+                        # Process messages sequentially to avoid session
+                        # conflicts from concurrent flushes on a shared session.
+                        from backend.agents.pipeline import run_pipeline
+                        for state in new_states:
+                            try:
+                                await run_pipeline(state, db)
+                            except Exception as msg_err:
+                                logger.warning(
+                                    f"Pipeline failed for {state.platform_message_id}: {msg_err}"
+                                )
+                                await db.rollback()
+                                # Re-enter transaction for next message
+                                continue
 
                     logger.info(
-                        f"Synced {len(states)} messages from {cred.platform} "
-                        f"for user {cred.user_id}"
+                        f"Synced {cred.platform} for user {cred.user_id}: "
+                        f"{len(new_states)} new, {len(existing_ids)} skipped"
                     )
 
                 # Update sync state

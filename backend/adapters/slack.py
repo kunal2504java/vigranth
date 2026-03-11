@@ -8,7 +8,7 @@ From Integration Spec Section 1.3:
   - Rate Limits: Tier 1: 1/sec, Tier 2: 20/min, Tier 3: 50/min
 """
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 from uuid import uuid4
 
@@ -200,4 +200,4 @@ class SlackAdapter(PlatformAdapter):
             epoch = float(ts.split(".")[0]) if "." in ts else float(ts)
             return datetime.utcfromtimestamp(epoch).isoformat()
         except (ValueError, TypeError):
-            return datetime.utcnow().isoformat()
+            return datetime.now(timezone.utc).isoformat()

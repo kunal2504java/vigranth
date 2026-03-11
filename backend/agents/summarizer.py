@@ -70,7 +70,8 @@ async def summarize_thread(
             }],
         )
 
-        result = json.loads(response.content[0].text)
+        from backend.agents import extract_json
+        result = extract_json(response.content[0].text)
 
         summary = {
             "key_points": result.get("key_points", [])[:3],

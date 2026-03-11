@@ -137,11 +137,28 @@ async def get_me(
     )
 
 
+# --- Helper: extract user_id from query token (for browser redirects) ---
+
+def _user_id_from_query_token(token: str) -> str:
+    """Decode a JWT passed as a query parameter and return the user_id."""
+    payload = decode_token(token)
+    user_id = payload.get("sub")
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Invalid token")
+    return user_id
+
+
 # --- Gmail OAuth ---
 
 @router.get("/gmail/connect")
-async def gmail_connect(user_id: str = Depends(get_current_user_id)):
-    """Redirect user to Google OAuth consent screen."""
+async def gmail_connect(token: str = ""):
+    """Redirect user to Google OAuth consent screen.
+    Token is passed as a query param since browsers can't set Authorization headers on redirects.
+    """
+    if not token:
+        raise HTTPException(status_code=401, detail="token query parameter required")
+    user_id = _user_id_from_query_token(token)
+
     scopes = "https://www.googleapis.com/auth/gmail.readonly https://www.googleapis.com/auth/gmail.send https://www.googleapis.com/auth/gmail.modify"
     oauth_url = (
         f"https://accounts.google.com/o/oauth2/auth"
@@ -216,9 +233,13 @@ async def gmail_callback(
 # --- Slack OAuth ---
 
 @router.get("/slack/connect")
-async def slack_connect(user_id: str = Depends(get_current_user_id)):
+async def slack_connect(token: str = ""):
     """Redirect user to Slack OAuth."""
-    scopes = "channels:history,im:history,chat:write,users:read"
+    if not token:
+        raise HTTPException(status_code=401, detail="token query parameter required")
+    user_id = _user_id_from_query_token(token)
+
+    scopes = "channels:history,channels:read,im:history,im:read,mpim:read,chat:write,users:read,users:read.email"
     oauth_url = (
         f"https://slack.com/oauth/v2/authorize"
         f"?client_id={settings.SLACK_CLIENT_ID}"
@@ -274,7 +295,7 @@ async def slack_callback(
             platform="slack",
             access_token=encrypt_token(access_token),
             platform_user_id=team_id,
-            scopes="channels:history,im:history,chat:write,users:read",
+            scopes="channels:history,channels:read,im:history,im:read,mpim:read,chat:write,users:read,users:read.email",
         )
         db.add(cred)
 
@@ -285,8 +306,12 @@ async def slack_callback(
 # --- Discord OAuth ---
 
 @router.get("/discord/connect")
-async def discord_connect(user_id: str = Depends(get_current_user_id)):
+async def discord_connect(token: str = ""):
     """Redirect user to Discord OAuth."""
+    if not token:
+        raise HTTPException(status_code=401, detail="token query parameter required")
+    user_id = _user_id_from_query_token(token)
+
     scopes = "bot identify messages.read"
     oauth_url = (
         f"https://discord.com/api/oauth2/authorize"

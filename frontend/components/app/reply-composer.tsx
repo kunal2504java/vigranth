@@ -5,8 +5,10 @@ import { Sparkles, Send } from "lucide-react"
 import { toast } from "sonner"
 import { getPlatformName } from "./platform-icon"
 import type { Platform } from "@/lib/types"
+import { useStore } from "@/lib/store"
 
 interface ReplyComposerProps {
+  messageId: string
   platform: Platform
   onSend: (content: string) => void
 }
@@ -28,7 +30,8 @@ const MOCK_DRAFTS = [
   "Got it \u2014 I'll take a look at this and circle back with my thoughts. Appreciate you flagging it.",
 ]
 
-export function ReplyComposer({ platform, onSend }: ReplyComposerProps) {
+export function ReplyComposer({ messageId, platform, onSend }: ReplyComposerProps) {
+  const { generateDraft } = useStore()
   const [content, setContent] = useState("")
   const [isTyping, setIsTyping] = useState(false)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
@@ -40,7 +43,14 @@ export function ReplyComposer({ platform, onSend }: ReplyComposerProps) {
     setIsTyping(true)
     setContent("")
 
-    const draft = MOCK_DRAFTS[Math.floor(Math.random() * MOCK_DRAFTS.length)]
+    let draft: string
+    try {
+      // Try the real API first
+      draft = await generateDraft(messageId)
+    } catch {
+      // Fall back to mock draft
+      draft = MOCK_DRAFTS[Math.floor(Math.random() * MOCK_DRAFTS.length)]
+    }
 
     // Typewriter effect
     for (let i = 0; i <= draft.length; i++) {

@@ -43,9 +43,12 @@ class Settings(BaseSettings):
     # -- Slack OAuth2 --
     SLACK_CLIENT_ID: str = ""
     SLACK_CLIENT_SECRET: str = ""
+    SLACK_BOT_TOKEN: str = ""
     SLACK_REDIRECT_URI: str = "http://localhost:8000/auth/slack/callback"
 
-    # -- Telegram --
+    # -- Telegram (Client API via Telethon) --
+    TELEGRAM_API_ID: int = 0
+    TELEGRAM_API_HASH: str = ""
     TELEGRAM_BOT_TOKEN: str = ""
 
     # -- Discord --

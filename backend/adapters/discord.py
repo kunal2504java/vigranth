@@ -12,7 +12,7 @@ From Integration Spec Section 1.5:
 import asyncio
 import json
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional, Callable, Awaitable
 from uuid import uuid4
 
@@ -107,7 +107,7 @@ class DiscordAdapter(PlatformAdapter):
                 username=author.get("username"),
             ),
             content_text=raw_message.get("content", ""),
-            timestamp=raw_message.get("timestamp", datetime.utcnow().isoformat()),
+            timestamp=raw_message.get("timestamp", datetime.now(timezone.utc).isoformat()),
         )
 
     async def send_message(

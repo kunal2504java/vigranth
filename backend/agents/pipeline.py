@@ -308,7 +308,7 @@ async def _upsert_contact(db: AsyncSession, state: MessageState) -> None:
 
         if contact:
             contact.display_name = state.sender.name
-            contact.relationship = state.sender.relationship
+            contact.contact_relationship = state.sender.relationship
             contact.is_vip = state.sender.is_vip
             contact.reply_rate = state.sender.historical_reply_rate
             contact.message_count = (contact.message_count or 0) + 1
@@ -319,7 +319,7 @@ async def _upsert_contact(db: AsyncSession, state: MessageState) -> None:
                 contact_identifier=state.sender.id,
                 platform=platform_val,
                 display_name=state.sender.name,
-                relationship=state.sender.relationship,
+                contact_relationship=state.sender.relationship,
                 is_vip=state.sender.is_vip,
                 reply_rate=state.sender.historical_reply_rate,
                 message_count=1,

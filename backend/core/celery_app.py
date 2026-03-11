@@ -54,5 +54,5 @@ celery.conf.update(
     },
 )
 
-# Auto-discover tasks in the tasks package
-celery.autodiscover_tasks(["backend.tasks"])
+# Explicitly include task modules (autodiscover looks for tasks.py, ours is sync.py)
+celery.conf.include = ["backend.tasks.sync"]

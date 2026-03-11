@@ -1,5 +1,9 @@
 """
-Async SQLAlchemy engine and session management for PostgreSQL.
+Async SQLAlchemy engine and session management for PostgreSQL / Supabase.
+
+Uses the Supabase session pooler (port 5432) which maintains persistent
+connections and fully supports SQLAlchemy's asyncpg dialect including
+JSON/JSONB type codec setup via prepared statements.
 """
 from sqlalchemy.ext.asyncio import (
     AsyncSession,
@@ -14,14 +18,15 @@ from backend.core.config import get_settings
 
 settings = get_settings()
 
-# Async engine with connection pooling
+# Async engine — single definition
+# prepared_statement_cache_size=0 is set in the DATABASE_URL query string
+# to disable asyncpg's statement cache for Supabase's pgbouncer transaction pooler
 engine = create_async_engine(
     settings.DATABASE_URL,
     echo=(settings.APP_ENV == "development"),
-    pool_size=20,
-    max_overflow=10,
     pool_pre_ping=True,
-    pool_recycle=3600,
+    pool_size=10,
+    max_overflow=5,
 )
 
 # Session factory

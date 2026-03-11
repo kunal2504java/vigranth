@@ -88,7 +88,8 @@ async def build_context(
             }],
         )
 
-        result = json.loads(response.content[0].text)
+        from backend.agents import extract_json
+        result = extract_json(response.content[0].text)
 
         state.sender.relationship = result.get("relationship_type", "stranger")
         state.sender.historical_reply_rate = float(result.get("reply_rate", 0.0))

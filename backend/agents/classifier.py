@@ -82,7 +82,8 @@ async def classify_message(state: MessageState) -> MessageState:
             }],
         )
 
-        result = json.loads(response.content[0].text)
+        from backend.agents import extract_json
+        result = extract_json(response.content[0].text)
 
         label = result.get("label", "fyi")
         if label not in ("urgent", "action", "fyi", "social", "spam"):

@@ -3,32 +3,38 @@
 import { useState } from "react"
 import { useRouter } from "next/navigation"
 import { motion, AnimatePresence } from "framer-motion"
-import { Inbox, ArrowRight, Mail } from "lucide-react"
+import { Inbox, ArrowRight, Mail, Loader2 } from "lucide-react"
 import { useStore } from "@/lib/store"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 
 export default function AuthPage() {
   const router = useRouter()
-  const { login, register, googleAuth } = useStore()
+  const { login, register, googleAuth, isAuthLoading } = useStore()
   const [mode, setMode] = useState<"choose" | "login" | "register">("choose")
   const [name, setName] = useState("")
   const [email, setEmail] = useState("")
   const [password, setPassword] = useState("")
+  const [error, setError] = useState<string | null>(null)
 
   function handleGoogle() {
     googleAuth()
     router.push("/onboarding")
   }
 
-  function handleEmail(e: React.FormEvent) {
+  async function handleEmail(e: React.FormEvent) {
     e.preventDefault()
-    if (mode === "register") {
-      register(name, email, password)
-    } else {
-      login(email, password)
+    setError(null)
+    try {
+      if (mode === "register") {
+        await register(name, email, password)
+      } else {
+        await login(email, password)
+      }
+      router.push("/onboarding")
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Something went wrong")
     }
-    router.push("/onboarding")
   }
 
   return (
@@ -153,12 +159,25 @@ export default function AuthPage() {
                     />
                   </div>
 
+                  {error && (
+                    <p className="text-[11px] font-mono text-red-500 border border-red-500/40 bg-red-50/10 px-3 py-2">
+                      {error}
+                    </p>
+                  )}
+
                   <button
                     type="submit"
-                    className="w-full flex items-center justify-center gap-2 border-2 border-foreground bg-foreground text-background px-4 py-3 text-xs font-mono tracking-wider uppercase hover:opacity-90 transition-opacity"
+                    disabled={isAuthLoading}
+                    className="w-full flex items-center justify-center gap-2 border-2 border-foreground bg-foreground text-background px-4 py-3 text-xs font-mono tracking-wider uppercase hover:opacity-90 transition-opacity disabled:opacity-50 disabled:cursor-wait"
                   >
-                    {mode === "register" ? "Create Account" : "Log In"}
-                    <ArrowRight size={14} />
+                    {isAuthLoading ? (
+                      <Loader2 size={14} className="animate-spin" />
+                    ) : (
+                      <>
+                        {mode === "register" ? "Create Account" : "Log In"}
+                        <ArrowRight size={14} />
+                      </>
+                    )}
                   </button>
                 </form>
 

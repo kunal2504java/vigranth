@@ -180,7 +180,7 @@ class Contact(Base):
     contact_identifier = Column(String(255), nullable=False)
     platform = Column(String(50), nullable=False)
     display_name = Column(String(255), nullable=True)
-    relationship = Column(String(50), default="stranger")
+    contact_relationship = Column(String(50), default="stranger")
     is_vip = Column(Boolean, default=False)
     reply_rate = Column(Float, default=0.0)
     message_count = Column(Integer, default=0)

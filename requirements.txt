@@ -10,9 +10,10 @@ python-dotenv==1.0.1
 anthropic==0.40.0
 
 # Database
-sqlalchemy[asyncio]==2.0.36
+sqlalchemy[asyncio]==2.0.48
 asyncpg==0.30.0
 alembic==1.14.0
+psycopg2-binary==2.9.11  # required for Alembic migrations against Supabase pgbouncer
 
 # Cache & Queue
 redis==5.2.0
@@ -37,8 +38,8 @@ google-api-python-client==2.157.0
 # Slack
 slack-sdk==3.33.4
 
-# Telegram
-python-telegram-bot==21.9
+# Telegram (Client API — reads all DMs, groups, channels)
+telethon==1.37.0
 
 # Discord / WebSocket
 websockets==14.1

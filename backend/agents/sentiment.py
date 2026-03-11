@@ -71,7 +71,8 @@ async def detect_sentiment(state: MessageState) -> MessageState:
             }],
         )
 
-        result = json.loads(response.content[0].text)
+        from backend.agents import extract_json
+        result = extract_json(response.content[0].text)
 
         sentiment = result.get("sentiment", "neutral")
         if sentiment not in ("positive", "neutral", "tense", "urgent", "distressed"):

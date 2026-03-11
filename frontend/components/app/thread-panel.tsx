@@ -189,7 +189,7 @@ export function ThreadPanel({ message, onClose }: ThreadPanelProps) {
       </ScrollArea>
 
       {/* ── Reply composer ────────────────────────────── */}
-      <ReplyComposer platform={message.platform} onSend={handleSend} />
+      <ReplyComposer messageId={message.id} platform={message.platform} onSend={handleSend} />
     </motion.div>
   )
 }

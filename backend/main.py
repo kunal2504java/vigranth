@@ -52,8 +52,9 @@ async def lifespan(app: FastAPI):
     global _pubsub_task
     # Startup
     logger.info("Starting UnifyInbox API...")
-    await init_db()
-    logger.info("Database initialized")
+    # Schema is managed by Alembic migrations — skip create_all on startup
+    # (init_db would fail against Supabase's pgbouncer transaction pooler)
+    logger.info("Database ready (schema managed by Alembic)")
 
     # Start Redis Pub/Sub subscriber to relay Celery events to WebSockets
     import asyncio
