@@ -26,7 +26,7 @@
 
 ## Overview
 
-UnifyInbox pulls messages from multiple communication platforms, runs them through a 6-agent AI pipeline (powered by Claude), and presents a single ranked feed. Users see what matters first, get AI-drafted replies, and send responses back to the original platform without switching apps.
+UnifyInbox pulls messages from multiple communication platforms, runs them through an AI pipeline (powered by Claude), and presents a single ranked feed. Users see what matters first, get AI-drafted replies, and send responses back to the original platform without switching apps.
 
 **Key capabilities:**
 
@@ -36,7 +36,7 @@ UnifyInbox pulls messages from multiple communication platforms, runs them throu
 - Cross-platform send (reply from UnifyInbox, delivered on the original platform)
 - Real-time WebSocket feed with live updates
 - Webhook ingestion for instant message arrival
-- Background sync, snooze, and priority decay via Celery
+- Background sync and snooze via Celery
 
 ---
 
@@ -55,13 +55,13 @@ UnifyInbox pulls messages from multiple communication platforms, runs them throu
                           |   API Server     |
                           +--------+---------+
                                    |
-                 +-----------------+-----------------+
-                 |                 |                 |
-          +------+------+  +------+------+  +-------+-----+
-          | PostgreSQL  |  |    Redis    |  |  ChromaDB   |
-          | (messages,  |  | (cache,     |  | (vector     |
-          |  users,     |  |  pub/sub,   |  |  embeddings)|
-          |  contacts)  |  |  sessions)  |  +-------------+
+                 +-----------------+
+                 |                 |
+          +------+------+  +------+------+
+          | PostgreSQL  |  |    Redis    |
+          | (messages,  |  | (cache,     |
+          |  users,     |  |  pub/sub,   |
+          |  contacts)  |  |  sessions)  |
           +-------------+  +------+------+
                                   |
                            +------+------+
@@ -70,9 +70,9 @@ UnifyInbox pulls messages from multiple communication platforms, runs them throu
                            +------+------+
                                   |
                     +-------------+-------------+
-                    |             |             |
-              Platform Sync  Snooze Check  Score Decay
-               (every 2m)    (every 1m)    (every 1h)
+                    |                           |
+              Platform Sync              Snooze Check
+               (every 2m)               (every 1m)
 ```
 
 ---
@@ -86,10 +86,9 @@ UnifyInbox pulls messages from multiple communication platforms, runs them throu
 | **AI**         | Anthropic Claude (via `anthropic` SDK)           |
 | **Database**   | PostgreSQL 16 (async via SQLAlchemy 2 + asyncpg) |
 | **Cache**      | Redis 7 (caching, pub/sub, session store)       |
-| **Vectors**    | ChromaDB (semantic search, message embeddings)  |
 | **Task Queue** | Celery 5.4 with Redis broker + beat scheduler   |
 | **Auth**       | JWT + AES-256-GCM token encryption at rest      |
-| **Infra**      | Docker Compose (6 services), Python 3.12        |
+| **Infra**      | Docker Compose (5 services), Python 3.12        |
 
 ---
 
@@ -107,17 +106,14 @@ vigranth/
 |   |   |-- celery_app.py        # Celery app + beat schedule config
 |   |   |-- security.py          # JWT auth + AES-256-GCM encryption
 |   |   |-- pubsub.py            # Redis Pub/Sub bridge (Celery -> WebSocket)
-|   |   |-- vector_store.py      # ChromaDB wrapper for embeddings
 |   |
 |   |-- agents/
 |   |   |-- state.py             # Pydantic models (MessageState, API schemas)
-|   |   |-- context_builder.py   # Enriches messages with sender history
-|   |   |-- classifier.py        # Categorizes: urgent/actionable/fyi/noise
-|   |   |-- priority_ranker.py   # Scores 0-100 using 6 weighted signals
-|   |   |-- sentiment.py         # Detects tone + emotional intensity
+|   |   |-- enrich.py            # Unified enrichment: context + classification + sentiment (1 LLM call)
+|   |   |-- priority_ranker.py   # Scores 0-100 using 6 weighted signals (deterministic)
 |   |   |-- draft_reply.py       # Generates reply with tone profiles
 |   |   |-- summarizer.py        # Thread/conversation summarization
-|   |   |-- pipeline.py          # Orchestrator: parallel agents + fallbacks
+|   |   |-- pipeline.py          # Orchestrator: enrich → rank → persist → push
 |   |
 |   |-- adapters/
 |   |   |-- base.py              # Abstract base adapter interface
@@ -160,7 +156,7 @@ vigranth/
 |       |-- glitch-marquee.tsx   # Scrolling platform integrations
 |       |-- bento/               # Bento grid cards (terminal, metrics, status, dither)
 |
-|-- docker-compose.yml           # 6 services: api, worker, beat, postgres, redis, chromadb
+|-- docker-compose.yml           # 5 services: api, worker, beat, postgres, redis
 |-- Dockerfile                   # Python 3.12-slim
 |-- requirements.txt             # Python dependencies
 |-- alembic.ini                  # Alembic config
@@ -176,28 +172,30 @@ vigranth/
 
 ## AI Agent Pipeline
 
-Messages flow through a 6-agent pipeline. Context Builder, Classifier, and Sentiment run **in parallel** for speed. Priority Ranker runs after (depends on their outputs). Draft Reply runs on-demand.
+Each message goes through a 3-step pipeline. The enrichment step makes a **single Claude Haiku call** that returns sender context, classification, and sentiment together. Priority Ranker is deterministic (no LLM). Draft Reply runs on-demand.
 
 ```
 Message Ingested
        |
-       +---> Context Builder --+
-       |     (sender history)  |
-       |                       |
-       +---> Classifier -------+--> Priority Ranker --> Feed
-       |     (urgent/fyi/      |    (score 0-100)
-       |      actionable/noise)|
-       |                       |
-       +---> Sentiment --------+
-             (tone + intensity)
+       v
+  Enrichment Agent (single LLM call)
+  - Sender relationship + context
+  - Label: urgent / action / fyi / social / spam
+  - Sentiment: positive / neutral / tense / distressed
+       |
+       v
+  Priority Ranker (deterministic, score 0-100)
+       |
+       v
+  DB + WebSocket push → Feed
 
-                         User clicks "Draft Reply"
-                                    |
-                              Draft Reply Agent
-                              (tone-aware response)
+                   User clicks "Draft Reply"
+                              |
+                       Draft Reply Agent
+                       (claude-sonnet, tone-aware)
 ```
 
-**All agents have rule-based fallbacks.** If the Claude API is unavailable, classification, scoring, and sentiment analysis continue using keyword and heuristic rules. The system never goes fully offline.
+**Rule-based fallbacks throughout.** If the Claude API is unavailable, enrichment continues using keyword and heuristic rules. The system never goes fully offline.
 
 ---
 
@@ -229,7 +227,7 @@ Messages are scored 0--100 using 6 weighted signals defined in the PRD:
 | Thread Activity             | 10%    |
 | Sentiment Intensity         | 10%    |
 
-Scores decay over time via a Celery periodic task (every hour). Users can manually reclassify messages to train the ranker.
+Users can manually reclassify messages to provide feedback to the ranker.
 
 ---
 
@@ -300,7 +298,7 @@ cp .env.example .env
 docker-compose up --build
 ```
 
-This starts 6 services:
+This starts 5 services:
 
 | Service      | Port  | Description                    |
 | ------------ | ----- | ------------------------------ |
@@ -309,7 +307,6 @@ This starts 6 services:
 | `beat`       | --    | Celery beat scheduler          |
 | `postgres`   | 5432  | PostgreSQL 16                  |
 | `redis`      | 6379  | Redis 7                        |
-| `chromadb`   | 8001  | ChromaDB vector store          |
 
 ### 3. Run database migrations
 
@@ -337,7 +334,6 @@ See `.env.example` for the full list. Key groups:
 | ------------------ | ---------------------------------------------------- |
 | **Database**       | `DATABASE_URL`, `DATABASE_URL_SYNC`                  |
 | **Redis**          | `REDIS_URL`                                          |
-| **ChromaDB**       | `CHROMA_URL`                                         |
 | **AI**             | `ANTHROPIC_API_KEY`                                  |
 | **JWT**            | `JWT_SECRET`, `JWT_ALGORITHM`, `JWT_EXPIRY_HOURS`    |
 | **Encryption**     | `ENCRYPTION_KEY` (AES-256 for OAuth tokens at rest)  |
@@ -358,7 +354,6 @@ services:
   beat       # Celery beat, schedules periodic tasks
   postgres   # PostgreSQL 16 Alpine, health-checked
   redis      # Redis 7 Alpine, health-checked
-  chromadb   # ChromaDB latest, vector embeddings
 ```
 
 **Celery beat schedule:**
@@ -367,7 +362,6 @@ services:
 | ---------------- | -------- | ------------------------------------------ |
 | `sync_platforms` | 2 min    | Pull new messages from all connected platforms |
 | `check_snoozes`  | 1 min    | Resurface snoozed messages when due        |
-| `decay_scores`   | 1 hour   | Reduce priority scores on aging messages   |
 
 ---
 

@@ -7,20 +7,26 @@ Endpoints:
   DELETE /api/v1/platforms/{platform}             — disconnect platform
   POST   /api/v1/platforms/telegram/start        — send OTP to phone
   POST   /api/v1/platforms/telegram/verify       — verify OTP, store session
+  GET    /api/v1/platforms/discord/guilds        — list user's Discord servers
 """
 import logging
 from datetime import datetime, timezone
+from typing import Optional
 
+import httpx
 from pydantic import BaseModel
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from backend.core.config import get_settings
 from backend.core.database import get_db
-from backend.core.security import get_current_user_id, encrypt_token
+from backend.core.security import get_current_user_id, encrypt_token, decrypt_token
 from backend.agents.state import PlatformStatus, ConnectRequest, ConnectResponse
 from backend.adapters.registry import get_supported_platforms
 from backend.models.database import PlatformCredential, SyncState
+
+settings = get_settings()
 
 logger = logging.getLogger(__name__)
 
@@ -125,6 +131,93 @@ async def telegram_verify(
         "username": result.get("username", ""),
         "name": result.get("name", ""),
     }
+
+
+DISCORD_API = "https://discord.com/api/v10"
+
+
+class DiscordGuild(BaseModel):
+    id: str
+    name: str
+    icon: Optional[str]        # icon hash — construct URL on frontend
+    owner: bool                # whether the user owns this guild
+    bot_in_guild: bool         # whether the UnifyInbox bot is already in this guild
+    invite_url: str            # pre-built invite URL for this specific guild
+
+
+@router.get("/discord/guilds", response_model=list[DiscordGuild])
+async def discord_guilds(
+    user_id: str = Depends(get_current_user_id),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Return all Discord servers the user belongs to, annotated with whether
+    the UnifyInbox bot is already present in each one.
+
+    Uses:
+    - User's stored OAuth access token → GET /users/@me/guilds (user's servers)
+    - Bot token from env var          → GET /users/@me/guilds (bot's servers)
+    """
+    # Get user's stored Discord OAuth token
+    result = await db.execute(
+        select(PlatformCredential).where(
+            PlatformCredential.user_id == user_id,
+            PlatformCredential.platform == "discord",
+        )
+    )
+    cred = result.scalar_one_or_none()
+    if not cred:
+        raise HTTPException(status_code=404, detail="Discord not connected. Complete OAuth first.")
+
+    user_token = decrypt_token(cred.refresh_token or cred.access_token)
+    bot_token = settings.DISCORD_BOT_TOKEN
+
+    async with httpx.AsyncClient(timeout=15) as client:
+        # Fetch guilds the user is in
+        user_guilds_resp = await client.get(
+            f"{DISCORD_API}/users/@me/guilds",
+            headers={"Authorization": f"Bearer {user_token}"},
+        )
+        if user_guilds_resp.status_code != 200:
+            logger.error(f"Discord user guilds fetch failed: {user_guilds_resp.text}")
+            raise HTTPException(status_code=400, detail="Failed to fetch your Discord servers. Try reconnecting Discord.")
+
+        user_guilds = {g["id"]: g for g in user_guilds_resp.json()}
+
+        # Fetch guilds the bot is already in
+        bot_guild_ids: set[str] = set()
+        if bot_token:
+            bot_guilds_resp = await client.get(
+                f"{DISCORD_API}/users/@me/guilds",
+                headers={"Authorization": f"Bot {bot_token}"},
+            )
+            if bot_guilds_resp.status_code == 200:
+                bot_guild_ids = {g["id"] for g in bot_guilds_resp.json()}
+
+    guilds = []
+    for guild_id, guild in user_guilds.items():
+        bot_in = guild_id in bot_guild_ids
+        # Pre-build the invite URL with this guild pre-selected
+        invite_url = (
+            f"https://discord.com/oauth2/authorize"
+            f"?client_id={settings.DISCORD_CLIENT_ID}"
+            f"&scope=bot"
+            f"&permissions=68608"
+            f"&guild_id={guild_id}"
+            f"&disable_guild_select=true"
+        )
+        guilds.append(DiscordGuild(
+            id=guild_id,
+            name=guild["name"],
+            icon=guild.get("icon"),
+            owner=guild.get("owner", False),
+            bot_in_guild=bot_in,
+            invite_url=invite_url,
+        ))
+
+    # Sort: bot already in guild first, then alphabetically
+    guilds.sort(key=lambda g: (not g.bot_in_guild, g.name.lower()))
+    return guilds
 
 
 @router.get("", response_model=list[PlatformStatus])

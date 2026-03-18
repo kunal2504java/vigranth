@@ -270,6 +270,24 @@ export const telegram = {
   },
 }
 
+// ── Discord ───────────────────────────────────────────────────────────────
+
+export interface DiscordGuild {
+  id: string
+  name: string
+  icon: string | null
+  owner: boolean
+  bot_in_guild: boolean
+  invite_url: string
+}
+
+export const discord = {
+  /** List all Discord servers the user is in, with bot presence status */
+  guilds() {
+    return apiFetch<DiscordGuild[]>("/api/v1/platforms/discord/guilds")
+  },
+}
+
 // ── OAuth Connect URLs ────────────────────────────────────────────────────
 
 /**

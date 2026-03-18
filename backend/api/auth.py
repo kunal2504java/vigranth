@@ -312,7 +312,9 @@ async def discord_connect(token: str = ""):
         raise HTTPException(status_code=401, detail="token query parameter required")
     user_id = _user_id_from_query_token(token)
 
-    scopes = "bot identify messages.read"
+    # identify: get Discord user profile
+    # guilds: list all servers the user is in (for guild selector UI)
+    scopes = "identify guilds"
     oauth_url = (
         f"https://discord.com/api/oauth2/authorize"
         f"?client_id={settings.DISCORD_CLIENT_ID}"
@@ -330,7 +332,13 @@ async def discord_callback(
     state: str,
     db: AsyncSession = Depends(get_db),
 ):
-    """Handle Discord OAuth callback."""
+    """
+    Handle Discord OAuth callback.
+
+    Stores the user's OAuth access token (used for listing their guilds)
+    and refresh token. The bot token is stored separately via the
+    store_discord.py script / env var and is used for actual message reading.
+    """
     user_id = state
 
     async with httpx.AsyncClient() as client:
@@ -343,12 +351,28 @@ async def discord_callback(
                 "redirect_uri": settings.DISCORD_REDIRECT_URI,
                 "grant_type": "authorization_code",
             },
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
         )
 
     if response.status_code != 200:
-        raise HTTPException(status_code=400, detail="Discord OAuth failed")
+        logger.error(f"Discord OAuth token exchange failed: {response.text}")
+        return RedirectResponse(
+            url=f"{settings.FRONTEND_URL}/connect?platform=discord&status=error&detail=OAuth+failed"
+        )
 
     tokens = response.json()
+    user_access_token = tokens.get("access_token", "")
+    user_refresh_token = tokens.get("refresh_token", "")
+
+    # Fetch Discord user ID
+    discord_user_id = ""
+    async with httpx.AsyncClient() as client:
+        me_response = await client.get(
+            "https://discord.com/api/v10/users/@me",
+            headers={"Authorization": f"Bearer {user_access_token}"},
+        )
+        if me_response.status_code == 200:
+            discord_user_id = me_response.json().get("id", "")
 
     result = await db.execute(
         select(PlatformCredential).where(
@@ -359,18 +383,31 @@ async def discord_callback(
     existing = result.scalar_one_or_none()
 
     if existing:
-        existing.access_token = encrypt_token(tokens["access_token"])
-        existing.refresh_token = encrypt_token(tokens.get("refresh_token", ""))
+        # Preserve bot token in access_token if it was already stored via script.
+        # Only overwrite with user OAuth token if no bot token exists yet.
+        if not existing.access_token or existing.access_token == encrypt_token(""):
+            existing.access_token = encrypt_token(user_access_token)
+        existing.refresh_token = encrypt_token(user_refresh_token)
+        existing.platform_user_id = discord_user_id
+        existing.scopes = "identify,guilds"
         existing.updated_at = datetime.now(timezone.utc)
     else:
+        # No bot token stored yet — store user OAuth token temporarily.
+        # It will be replaced by the bot token once store_discord.py is run,
+        # OR we fall back to DISCORD_BOT_TOKEN env var in the adapter.
         cred = PlatformCredential(
             user_id=user_id,
             platform="discord",
-            access_token=encrypt_token(tokens["access_token"]),
-            refresh_token=encrypt_token(tokens.get("refresh_token", "")),
-            scopes="bot,identify,messages.read",
+            access_token=encrypt_token(user_access_token),
+            refresh_token=encrypt_token(user_refresh_token),
+            platform_user_id=discord_user_id,
+            scopes="identify,guilds",
         )
         db.add(cred)
 
     await db.flush()
-    return RedirectResponse(url=f"{settings.FRONTEND_URL}/connect?platform=discord&status=success")
+
+    # Redirect to guild selector instead of onboarding
+    return RedirectResponse(
+        url=f"{settings.FRONTEND_URL}/connect?platform=discord&status=success&next=guilds"
+    )

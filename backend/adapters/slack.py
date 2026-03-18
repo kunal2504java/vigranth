@@ -42,11 +42,11 @@ class SlackAdapter(PlatformAdapter):
             messages = []
 
             async with httpx.AsyncClient(timeout=30) as client:
-                # Get DM conversations
+                # Get DMs, group DMs, and public channels the bot is in
                 conv_response = await client.get(
                     f"{SLACK_API_BASE}/conversations.list",
                     headers=headers,
-                    params={"types": "im,mpim", "limit": 100},
+                    params={"types": "im,mpim,public_channel", "limit": 200},
                 )
                 conv_data = conv_response.json()
 

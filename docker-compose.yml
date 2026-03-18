@@ -57,18 +57,8 @@ services:
     networks:
       - unifyinbox
 
-  chromadb:
-    image: chromadb/chroma:0.5.20
-    ports:
-      - "8001:8000"
-    volumes:
-      - chroma_data:/chroma/chroma
-    networks:
-      - unifyinbox
-
 volumes:
   redis_data:
-  chroma_data:
 
 networks:
   unifyinbox:

@@ -1,10 +1,9 @@
 """
 Celery background tasks for platform synchronization.
 
-From Architecture doc Section 6.3:
+Tasks:
   - sync-all-platforms: every 2 minutes — poll all connected platforms
   - check-snoozed: every 1 minute — unsnooze expired messages
-  - decay-scores: every 1 hour — recalculate priority for time decay
 
 These tasks run in the Celery worker process and use synchronous
 DB access (since Celery doesn't support async natively).
@@ -194,7 +193,6 @@ async def _async_sync_user_platform(user_email: str, platform: str, history_id: 
     from backend.models.database import User, PlatformCredential
     from backend.core.security import decrypt_token
     from backend.adapters.registry import get_adapter
-    from backend.agents.pipeline import run_pipeline_batch
 
     async with get_db_context() as db:
         # Find user by email
@@ -233,8 +231,10 @@ async def _async_sync_user_platform(user_email: str, platform: str, history_id: 
         )
 
         if raw_messages:
+            from backend.agents.pipeline import run_pipeline
             states = [adapter.normalize(raw, str(user.id)) for raw in raw_messages]
-            await run_pipeline_batch(states, db, max_concurrent=3)
+            for state in states:
+                await run_pipeline(state, db)
 
 
 @celery.task(name="backend.tasks.sync.process_webhook_message", bind=True)
@@ -336,57 +336,3 @@ async def _async_check_snoozed():
             logger.info(f"Unsnoozed {len(expired)} messages")
 
 
-@celery.task(name="backend.tasks.sync.recalculate_priority_scores")
-def recalculate_priority_scores():
-    """
-    Periodic task: apply time decay to priority scores.
-    Messages older than 24hrs gradually lose priority.
-    Runs every 1 hour.
-    """
-    _run_async(_async_decay_scores())
-
-
-async def _async_decay_scores():
-    """Apply time decay to message priority scores."""
-    from sqlalchemy import select
-    from backend.core.database import get_db_context
-    from backend.models.database import Message
-    from backend.core.redis import cache
-
-    now = datetime.now(timezone.utc)
-    decay_threshold = now - timedelta(hours=24)
-
-    async with get_db_context() as db:
-        # Get messages older than 24hrs that aren't done
-        result = await db.execute(
-            select(Message).where(
-                Message.is_done == False,
-                Message.timestamp < decay_threshold,
-                Message.priority_score > 0.1,
-            )
-        )
-        messages = result.scalars().all()
-
-        affected_users = set()
-        for msg in messages:
-            age_hours = (now - msg.timestamp).total_seconds() / 3600
-
-            # Apply decay: reduce score by 5% per 12 hours past 24hrs
-            decay_periods = (age_hours - 24) / 12
-            decay_factor = max(0.3, 1.0 - (decay_periods * 0.05))
-
-            new_score = round(msg.priority_score * decay_factor, 3)
-            new_score = max(0.05, new_score)  # floor at 0.05
-
-            if new_score != msg.priority_score:
-                msg.priority_score = new_score
-                affected_users.add(str(msg.user_id))
-
-        await db.flush()
-
-        # Invalidate feed caches for affected users
-        for uid in affected_users:
-            await cache.invalidate_feed(uid)
-
-        if messages:
-            logger.info(f"Decayed scores for {len(messages)} messages across {len(affected_users)} users")

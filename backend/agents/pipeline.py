@@ -1,29 +1,10 @@
 """
 Agent Pipeline Orchestrator — runs the full AI enrichment pipeline.
 
-Pipeline flow (from Architecture doc Section 2.2):
-
-  New Message
-      |
-      v
-  Reader Agent (normalize - done by adapters)
-      |
-      +--- asyncio.gather() (parallel) ---+
-      |              |                     |
-  Context Builder  Classifier         Sentiment
-      |              |                     |
-      +--- merge enrichments on state -----+
-      |
-      v
-  Priority Ranker (deterministic, weighted scoring)
-      |
-      v
-  Save to DB + push via WebSocket
-      |
-      v  (on user click)
-  Draft Reply Agent (claude-sonnet)
+Pipeline flow:
+  New Message → Enrich (single LLM call) → Priority Ranker → DB + WebSocket
+  On user click: Draft Reply Agent (claude-sonnet)
 """
-import asyncio
 import logging
 from datetime import datetime, timezone
 from typing import Optional
@@ -32,12 +13,9 @@ from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.agents.state import MessageState
-from backend.agents.context_builder import build_context
-from backend.agents.classifier import classify_message
-from backend.agents.sentiment import detect_sentiment
+from backend.agents.enrich import enrich_message
 from backend.agents.priority_ranker import compute_priority
 from backend.models.database import Message, Contact
-from backend.core.vector_store import embed_message
 
 logger = logging.getLogger(__name__)
 
@@ -52,11 +30,10 @@ async def run_pipeline(
 
     Steps:
       1. Fetch sender history from DB for context
-      2. Run Context Builder, Classifier, Sentiment in parallel
-      3. Run Priority Ranker (needs outputs from step 2)
+      2. Enrich message (context, classification, sentiment) — single LLM call
+      3. Run Priority Ranker (deterministic, needs enrichment outputs)
       4. Persist to database
-      5. Embed in vector store
-      6. Push to WebSocket clients
+      5. Push to WebSocket clients
     """
     try:
         # --- Step 0: Gather sender history ---
@@ -64,28 +41,13 @@ async def run_pipeline(
             db, state.user_id, state.sender.id, state.platform
         )
 
-        # --- Step 1: Run enrichment agents in parallel ---
-        # Context Builder needs history; Classifier & Sentiment are independent
-        results = await asyncio.gather(
-            build_context(
-                state,
-                interaction_history=interaction_history,
-                reply_count=reply_count,
-                total_messages=total_messages,
-            ),
-            classify_message(state),
-            detect_sentiment(state),
-            return_exceptions=True,
+        # --- Step 1: Enrich message (context, classification, sentiment) ---
+        state = await enrich_message(
+            state,
+            interaction_history=interaction_history,
+            reply_count=reply_count,
+            total_messages=total_messages,
         )
-
-        # Handle individual agent failures gracefully
-        for i, result in enumerate(results):
-            if isinstance(result, Exception):
-                agent_names = ["context_builder", "classifier", "sentiment"]
-                logger.error(f"Agent {agent_names[i]} failed: {result}")
-
-        # The state object is mutated in place by each agent, so it's
-        # already enriched regardless of which completed successfully.
 
         # --- Step 2: Get thread activity for priority ranker ---
         thread_msg_count, thread_recent = await _get_thread_activity(
@@ -105,10 +67,7 @@ async def run_pipeline(
         # --- Step 5: Update contact record ---
         await _upsert_contact(db, state)
 
-        # --- Step 6: Embed in vector store (fire-and-forget) ---
-        asyncio.create_task(_safe_embed(state))
-
-        # --- Step 7: Push to WebSocket clients ---
+        # --- Step 6: Push to WebSocket clients ---
         if ws_manager:
             await ws_manager.push_to_user(
                 state.user_id,
@@ -138,30 +97,12 @@ async def run_pipeline_batch(
     states: list[MessageState],
     db: AsyncSession,
     ws_manager=None,
-    max_concurrent: int = 5,
 ) -> list[MessageState]:
-    """
-    Process multiple messages through the pipeline with concurrency control.
-    """
-    semaphore = asyncio.Semaphore(max_concurrent)
-
-    async def process_one(state: MessageState) -> MessageState:
-        async with semaphore:
-            return await run_pipeline(state, db, ws_manager)
-
-    results = await asyncio.gather(
-        *(process_one(s) for s in states),
-        return_exceptions=True,
-    )
-
+    """Process multiple messages sequentially to avoid DB session conflicts."""
     processed = []
-    for i, result in enumerate(results):
-        if isinstance(result, Exception):
-            logger.error(f"Batch pipeline failed for message {states[i].id}: {result}")
-            processed.append(states[i])
-        else:
-            processed.append(result)
-
+    for state in states:
+        result = await run_pipeline(state, db, ws_manager)
+        processed.append(result)
     return processed
 
 
@@ -331,21 +272,6 @@ async def _upsert_contact(db: AsyncSession, state: MessageState) -> None:
     except Exception as e:
         logger.warning(f"Failed to upsert contact: {e}")
 
-
-async def _safe_embed(state: MessageState) -> None:
-    """Embed message in vector store, swallow errors."""
-    try:
-        platform_val = state.platform if isinstance(state.platform, str) else state.platform.value
-        await embed_message(
-            message_id=state.id,
-            content=state.content_text,
-            user_id=state.user_id,
-            platform=platform_val,
-            sender_id=state.sender.id,
-            timestamp=state.timestamp,
-        )
-    except Exception as e:
-        logger.warning(f"Failed to embed message {state.id}: {e}")
 
 
 def _parse_timestamp(ts: str) -> datetime:

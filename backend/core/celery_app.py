@@ -4,7 +4,6 @@ Celery application for background task processing.
 Tasks:
   - Platform message sync (every 2 minutes)
   - Snoozed message checks (every 1 minute)
-  - Priority score decay/recalculation (every 1 hour)
 """
 from celery import Celery
 from backend.core.config import get_settings
@@ -46,10 +45,6 @@ celery.conf.update(
         "check-snoozed-messages": {
             "task": "backend.tasks.sync.check_snoozed_messages",
             "schedule": settings.SNOOZE_CHECK_INTERVAL_SECONDS,
-        },
-        "decay-priority-scores": {
-            "task": "backend.tasks.sync.recalculate_priority_scores",
-            "schedule": settings.SCORE_DECAY_INTERVAL_SECONDS,
         },
     },
 )

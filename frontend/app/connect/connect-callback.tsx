@@ -23,19 +23,26 @@ export function ConnectCallback() {
   const status = searchParams.get("status")
   const detail = searchParams.get("detail")
 
+  const next = searchParams.get("next")
+
   useEffect(() => {
     if (handled.current) return
     handled.current = true
 
     if (platform && status === "success") {
       connectPlatform(platform)
-      setTimeout(() => router.replace("/onboarding"), 1500)
+      // Discord: after OAuth, go to guild selector
+      if (platform === "discord" && next === "guilds") {
+        setTimeout(() => router.replace("/connect/discord/guilds"), 1200)
+      } else {
+        setTimeout(() => router.replace("/onboarding"), 1500)
+      }
     } else if (status === "error") {
       setTimeout(() => router.replace("/onboarding"), 3000)
     } else {
       router.replace("/onboarding")
     }
-  }, [platform, status, connectPlatform, router])
+  }, [platform, status, next, connectPlatform, router])
 
   return (
     <div className="min-h-screen dot-grid-bg flex items-center justify-center px-4">
@@ -51,7 +58,9 @@ export function ConnectCallback() {
               {platform} Connected
             </h1>
             <p className="text-[11px] font-mono text-muted-foreground">
-              Redirecting to onboarding...
+              {platform === "discord" && next === "guilds"
+                ? "Redirecting to server selector..."
+                : "Redirecting to onboarding..."}
             </p>
           </>
         ) : status === "error" ? (

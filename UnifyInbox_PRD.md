@@ -1,5 +1,5 @@
 # UnifyInbox — Product Requirements Document
-**Version:** 1.0 | **Status:** Draft | **Date:** February 2026
+**Version:** 1.1 | **Status:** Active | **Date:** March 2026
 
 ---
 
@@ -76,11 +76,9 @@ UnifyInbox connects to every communication platform via official APIs, runs a mu
 | Feature | Priority | Agent | Description |
 |---|---|---|---|
 | Message Normalization | **Must Have** | Reader Agent | Unified schema across all platforms |
-| Sender Context Building | **Must Have** | Context Builder Agent | Who is this person + relationship history |
-| Message Classification | **Must Have** | Classifier Agent | Tag: urgent / action / fyi / social / spam |
-| Priority Ranking | **Must Have** | Priority Ranker Agent | Single sorted feed across platforms |
+| Message Enrichment | **Must Have** | Enrichment Agent | Sender context + classification + sentiment in a single LLM call |
+| Priority Ranking | **Must Have** | Priority Ranker Agent | Deterministic 0–100 score from enrichment outputs |
 | Draft Reply Generation | **Must Have** | Draft Reply Agent | One-click AI draft per platform tone |
-| Sentiment Detection | Should Have | Sentiment Agent | Flag tense/angry/delicate messages |
 | Thread Summarization | Should Have | Summarizer Agent | Condense long threads to 3 bullets |
 | Smart Snooze | Should Have | Scheduler Agent | Resurface at predicted right time |
 | Style Learning | Nice to Have | Style Agent | Learn user's voice from sent history |
@@ -170,7 +168,7 @@ class AIEnrichment(BaseModel):
 |---|---|---|
 | Sender Relationship | 30% | VIP > Known Contact > Team > Stranger > Bot |
 | Explicit Urgency Keywords | 20% | ASAP, urgent, deadline, today, help, call me |
-| Time Sensitivity | 15% | Messages older than 24hrs decay in score |
+| Time Sensitivity | 15% | Recency of message relative to 24hr window |
 | Historical Response Rate | 15% | You've replied to this person 80% of the time |
 | Thread Activity | 10% | Active thread with multiple recent replies |
 | Sentiment Intensity | 10% | Distressed or tense messages rank higher |
@@ -226,7 +224,7 @@ Goal: 100 users active daily with Gmail + Slack + Telegram + Discord
 
 - OAuth connection for Gmail, Slack, Telegram, Discord
 - Message ingestion + normalization pipeline
-- Reader, Context Builder, Classifier, Priority Ranker agents
+- Enrichment Agent (context + classification + sentiment), Priority Ranker
 - Unified priority feed UI (React web app)
 - Thread view + one-click AI Draft Reply
 - Send reply through original platform API
@@ -236,7 +234,7 @@ Goal: 100 users active daily with Gmail + Slack + Telegram + Discord
 Goal: 1,000 MAU + $10k MRR
 
 - WhatsApp Business API integration
-- Sentiment Detection + Thread Summarization agents
+- Thread Summarization agent
 - VIP contacts management
 - Priority explanation tooltip
 - Mobile-responsive UI

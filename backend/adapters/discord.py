@@ -34,7 +34,9 @@ class DiscordAdapter(PlatformAdapter):
     """Discord platform adapter using Discord API + Gateway."""
 
     def _get_headers(self, credentials: dict) -> dict:
-        bot_token = credentials.get("bot_token", settings.DISCORD_BOT_TOKEN)
+        # The bot token is stored as access_token in platform_credentials.
+        # Fall back to the env var for direct usage / testing.
+        bot_token = credentials.get("access_token", settings.DISCORD_BOT_TOKEN)
         return {"Authorization": f"Bot {bot_token}"}
 
     async def fetch_new_messages(
@@ -43,45 +45,80 @@ class DiscordAdapter(PlatformAdapter):
         since: datetime,
         credentials: dict,
     ) -> list[dict]:
-        """Fetch recent DM messages from Discord."""
+        """
+        Fetch new messages from Discord via bot token:
+          1. DMs the bot is party to
+          2. Text channels in all guilds the bot has joined
+
+        Uses the bot token (from env var or credentials["access_token"]).
+        """
         try:
             headers = self._get_headers(credentials)
             messages = []
+            since_ts = since.timestamp()
 
             async with httpx.AsyncClient(timeout=30) as client:
-                # Get DM channels
+
+                # ── 1. DMs ────────────────────────────────────────────────
                 dm_response = await client.get(
                     f"{DISCORD_API_BASE}/users/@me/channels",
                     headers=headers,
                 )
+                dm_channels = dm_response.json() if dm_response.status_code == 200 else []
 
-                if dm_response.status_code != 200:
-                    logger.error(f"Discord DM channels fetch failed: {dm_response.status_code}")
-                    return []
+                # ── 2. Guild text channels ────────────────────────────────
+                guild_channels = []
+                guilds_response = await client.get(
+                    f"{DISCORD_API_BASE}/users/@me/guilds",
+                    headers=headers,
+                )
+                if guilds_response.status_code == 200:
+                    for guild in guilds_response.json():
+                        ch_response = await client.get(
+                            f"{DISCORD_API_BASE}/guilds/{guild['id']}/channels",
+                            headers=headers,
+                        )
+                        if ch_response.status_code == 200:
+                            # type 0 = GUILD_TEXT, type 5 = GUILD_ANNOUNCEMENT
+                            text_channels = [
+                                {**ch, "guild_name": guild.get("name", "")}
+                                for ch in ch_response.json()
+                                if ch.get("type") in (0, 5)
+                            ]
+                            guild_channels.extend(text_channels)
 
-                channels = dm_response.json()
+                # ── 3. Fetch messages from all channels ───────────────────
+                all_channels = [
+                    *[{**ch, "guild_name": "DM"} for ch in dm_channels],
+                    *guild_channels,
+                ]
 
-                for channel in channels:
+                for channel in all_channels:
                     try:
-                        # Fetch messages from each DM channel
                         msg_response = await client.get(
                             f"{DISCORD_API_BASE}/channels/{channel['id']}/messages",
                             headers=headers,
                             params={"limit": 50},
                         )
+                        if msg_response.status_code != 200:
+                            continue
 
-                        if msg_response.status_code == 200:
-                            for msg in msg_response.json():
-                                # Filter by timestamp
-                                msg_time = datetime.fromisoformat(
-                                    msg["timestamp"].replace("Z", "+00:00")
-                                )
-                                if msg_time >= since:
-                                    msg["channel_id"] = channel["id"]
-                                    msg["channel_type"] = channel.get("type", 1)
-                                    messages.append(msg)
+                        for msg in msg_response.json():
+                            msg_time = datetime.fromisoformat(
+                                msg["timestamp"].replace("Z", "+00:00")
+                            )
+                            if msg_time.timestamp() < since_ts:
+                                continue
+                            # Skip bot messages
+                            if msg.get("author", {}).get("bot"):
+                                continue
+                            msg["channel_id"] = channel["id"]
+                            msg["channel_type"] = channel.get("type", 1)
+                            msg["guild_name"] = channel.get("guild_name", "")
+                            msg["channel_name"] = channel.get("name", "")
+                            messages.append(msg)
                     except Exception as e:
-                        logger.warning(f"Failed to fetch Discord channel {channel['id']}: {e}")
+                        logger.debug(f"Skipping Discord channel {channel['id']}: {e}")
                         continue
 
             logger.info(f"Fetched {len(messages)} Discord messages for user {user_id}")
@@ -94,6 +131,16 @@ class DiscordAdapter(PlatformAdapter):
     def normalize(self, raw_message: dict, user_id: str) -> MessageState:
         """Convert raw Discord message to MessageState."""
         author = raw_message.get("author", {})
+        guild_name = raw_message.get("guild_name", "")
+        channel_name = raw_message.get("channel_name", "")
+
+        # Build a readable subject: "ServerName #channel-name" or "DM"
+        if guild_name and guild_name != "DM" and channel_name:
+            subject = f"{guild_name} #{channel_name}"
+        elif channel_name:
+            subject = f"#{channel_name}"
+        else:
+            subject = "DM"
 
         return MessageState(
             id=str(uuid4()),
@@ -106,7 +153,9 @@ class DiscordAdapter(PlatformAdapter):
                 name=author.get("global_name") or author.get("username", "Unknown"),
                 username=author.get("username"),
             ),
-            content_text=raw_message.get("content", ""),
+            # Prepend server/channel context to content so the AI pipeline
+            # has full context about where the message came from
+            content_text=f"[{subject}] {raw_message.get('content', '')}".strip(),
             timestamp=raw_message.get("timestamp", datetime.now(timezone.utc).isoformat()),
         )
 
@@ -214,7 +263,7 @@ class DiscordGateway:
                         "op": 2,
                         "d": {
                             "token": bot_token,
-                            "intents": 4608,  # GUILDS | GUILD_MESSAGES | DIRECT_MESSAGES
+                            "intents": 37376,  # GUILDS(1) | GUILD_MESSAGES(512) | DIRECT_MESSAGES(4096) | MESSAGE_CONTENT(32768)
                             "properties": {
                                 "os": "linux",
                                 "browser": "unifyinbox",

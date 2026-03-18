@@ -1,5 +1,5 @@
 # UnifyInbox — Technical Architecture
-**Version:** 1.0 | **Audience:** Engineering | **Date:** February 2026
+**Version:** 1.1 | **Audience:** Engineering | **Date:** March 2026
 
 ---
 
@@ -29,16 +29,15 @@ UnifyInbox is a multi-layer platform:
 ┌─────────────────────────▼────────────────────────────────┐
 │                    AGENT LAYER (Python)                   │
 │                                                          │
-│  Reader Agent → Context Builder → Classifier Agent       │
+│  Reader Agent → Enrichment Agent → Priority Ranker        │
 │                                         │                │
-│  Draft Reply Agent ← Sentiment Agent ← Priority Ranker   │
+│  Draft Reply Agent ←────────────────────┘                │
 └──────┬──────────────────────────────────────┬────────────┘
        │                                      │
 ┌──────▼──────────────┐        ┌──────────────▼───────────┐
 │   MESSAGE QUEUE      │        │       DATA LAYER         │
 │   Redis + Celery     │        │  PostgreSQL (messages)   │
-│   - Ingestion jobs   │        │  ChromaDB (embeddings)   │
-│   - Priority recalc  │        │  Redis (cache/session)   │
+│   - Ingestion jobs   │        │  Redis (cache/session)   │
 │   - Scheduled sends  │        └──────────────────────────┘
 └──────┬──────────────┘
        │
@@ -58,7 +57,6 @@ UnifyInbox is a multi-layer platform:
 | AI Models | Claude API (Anthropic) | Classification, drafting, summarization | Best reasoning + instruction following |
 | Message Queue | Redis + Celery | Background jobs & scheduling | Battle-tested, simple |
 | Primary DB | PostgreSQL | Messages, users, contacts | Relational + JSONB for flexibility |
-| Vector DB | ChromaDB | Message embeddings for context | Open source, easy self-host |
 | Cache | Redis | Session, rate limits, live feed | Sub-ms latency |
 | Frontend | React + TailwindCSS | Web app UI | Rapid development |
 | Realtime | WebSockets (FastAPI) | Live feed updates | Built into FastAPI |
@@ -71,19 +69,18 @@ UnifyInbox is a multi-layer platform:
 
 ### 2.1 Agent Overview
 
-UnifyInbox uses a pipeline of 6 specialized AI agents. Each agent has a single responsibility. Agents communicate through a shared `MessageState` Pydantic model.
+UnifyInbox uses a 4-agent pipeline. Agents communicate through a shared `MessageState` Pydantic model.
 
-- **Heavy agents** use `claude-sonnet-4-6` for quality
-- **Lightweight agents** use `claude-haiku-4-5-20251001` for speed + cost
+- **Enrichment Agent** uses `claude-haiku-4-5-20251001` — single call covering context, classification, and sentiment
+- **Draft Reply Agent** uses `claude-sonnet-4-6` for reply quality
+- **Priority Ranker** and **Reader** are deterministic (no LLM)
 
 | Agent | Model | Role |
 |---|---|---|
-| Reader Agent | No LLM (deterministic) | Pull raw messages, normalize to unified schema |
-| Context Builder Agent | claude-haiku | Enrich sender: relationship type, history, VIP status |
-| Classifier Agent | claude-haiku | Tag: urgent / action / fyi / social / spam |
-| Priority Ranker Agent | claude-haiku | Compute 0.0–1.0 score, rank the feed |
-| Sentiment Agent | claude-haiku | Detect tone: positive / neutral / tense / urgent / distressed |
-| Draft Reply Agent | claude-sonnet | Generate platform-toned reply draft |
+| Reader Agent | No LLM | Pull raw messages, normalize to unified schema |
+| Enrichment Agent | claude-haiku | Sender context + classification + sentiment — one call |
+| Priority Ranker Agent | No LLM | Compute 0.0–1.0 score from enrichment outputs (deterministic) |
+| Draft Reply Agent | claude-sonnet | Generate platform-toned reply draft (on demand) |
 
 ### 2.2 Agent Pipeline Flow
 
@@ -94,29 +91,25 @@ New Message (webhook or poll)
   Reader Agent
   (normalize → MessageState)
         │
-        ├─────────────────────────── asyncio.gather() ──────────────────────┐
-        │                            (runs in parallel)                     │
-        ▼                                  ▼                                ▼
-Context Builder Agent           Classifier Agent                 Sentiment Agent
-(sender relationship)           (label + score)                  (tone detection)
-        │                                  │                                │
-        └──────────────────────────────────┴────────────────────────────────┘
-                                           │
-                                    MessageState enriched
-                                           │
-                                           ▼
-                                Priority Ranker Agent
-                                (final priority_score)
-                                           │
-                                           ▼
-                              Save to PostgreSQL + push via WebSocket
-                                           │
-                                           ▼  (on user "Draft Reply" click)
-                                  Draft Reply Agent
-                              (claude-sonnet, platform tone)
-                                           │
-                                           ▼
-                               User edits → Send API → Platform
+        ▼
+  Enrichment Agent  [single claude-haiku call]
+  - relationship_type, reply_rate, context_summary
+  - label (urgent/action/fyi/social/spam), priority_score
+  - sentiment, is_complaint, needs_careful_response
+        │
+        ▼
+  Priority Ranker Agent  [deterministic, no LLM]
+  (final priority_score 0-100 from 6 weighted signals)
+        │
+        ▼
+  Save to PostgreSQL + push via WebSocket
+        │
+        ▼  (on user "Draft Reply" click)
+  Draft Reply Agent
+  (claude-sonnet, platform tone)
+        │
+        ▼
+  User edits → Send API → Platform
 ```
 
 ### 2.3 Shared State Schema
@@ -167,117 +160,51 @@ class MessageState(BaseModel):
     draft_reply: Optional[str] = None
 ```
 
-### 2.4 Context Builder Agent
+### 2.4 Enrichment Agent
+
+Replaces the former Context Builder, Classifier, and Sentiment agents. Makes **one** claude-haiku call per message and returns all enrichment data in a single structured JSON response.
 
 ```python
-# agents/context_builder.py
-import anthropic
-import json
-
-client = anthropic.Anthropic()
-
-CONTEXT_PROMPT = """
-Given this message sender info and conversation history, determine:
-1. relationship_type: vip | close_contact | work_contact | acquaintance | stranger | bot | newsletter
-2. estimated_reply_rate: float 0.0-1.0
-3. context_summary: one sentence about who this person is
-
-Sender: {sender_raw}
-Past interactions (last 20): {history}
-Times user replied: {reply_count} out of {total_messages}
-Last interaction: {last_interaction_days} days ago
-
-Respond in JSON only. No preamble.
-{{
-  "relationship_type": "...",
-  "reply_rate": 0.0,
-  "context_summary": "..."
-}}
+# agents/enrich.py
+SYSTEM_PROMPT = """
+You are a message enrichment agent. Analyze a message and its sender context.
+Respond with valid JSON only. No preamble.
 """
 
-async def build_context(state: MessageState, db) -> MessageState:
-    history = await db.get_sender_history(state.sender.id, state.platform, limit=20)
+USER_PROMPT = """
+SENDER: {sender_name} ({sender_identifier}) on {platform}
+EMAIL: {sender_email}
+PAST INTERACTIONS ({total_messages} total, {reply_count} replied):
+{interaction_history}
 
-    response = client.messages.create(
-        model="claude-haiku-4-5-20251001",
-        max_tokens=256,
-        messages=[{
-            "role": "user",
-            "content": CONTEXT_PROMPT.format(
-                sender_raw=state.sender.model_dump_json(),
-                history=history,
-                reply_count=history.get("reply_count", 0),
-                total_messages=history.get("total", 0),
-                last_interaction_days=state.sender.last_interaction_days or "unknown"
-            )
-        }]
-    )
+MESSAGE:
+{message_text}
 
-    result = json.loads(response.content[0].text)
-    state.sender.relationship = result["relationship_type"]
-    state.sender.historical_reply_rate = result["reply_rate"]
-    state.ai_enrichment.context_note = result["context_summary"]
-    return state
-```
-
-### 2.5 Classifier + Priority Ranker Agent
-
-```python
-# agents/classifier.py
-CLASSIFY_PROMPT = """
-Classify this message. Return JSON only.
-
-Sender relationship: {relationship} (vip > contact > team > stranger > bot)
-Historical reply rate: {reply_rate}
-Message: {content}
-Platform: {platform}
-
-Classification labels:
-- urgent: Requires response within hours, time-sensitive
-- action: Requires response but not immediately critical
-- fyi: Informational, no response needed
-- social: Casual/social, low professional priority
-- spam: Unsolicited, promotional, low value
-
-Priority score guidance:
-- 0.9-1.0: Urgent from VIP (investor, boss, client emergency)
-- 0.7-0.89: Action needed from known contact
-- 0.5-0.69: Action from stranger OR fyi from VIP
-- 0.3-0.49: Social from known contact
-- 0.0-0.29: Newsletter, bot, low-value
-
-Return:
-{{
+Return JSON with ALL of these fields:
+{
+  "relationship_type": "vip|close_contact|work_contact|acquaintance|stranger|bot|newsletter",
+  "reply_rate": 0.0,
+  "context_summary": "one sentence who this person is",
+  "is_likely_important": true,
   "label": "urgent|action|fyi|social|spam",
   "priority_score": 0.0,
-  "time_sensitive": true,
-  "reasoning": "one sentence"
-}}
+  "time_sensitive": false,
+  "reasoning": "one sentence on priority",
+  "sentiment": "positive|neutral|tense|urgent|distressed",
+  "is_complaint": false,
+  "needs_careful_response": false,
+  "suggested_approach": "one sentence on how to reply"
+}
 """
 
-async def classify_and_rank(state: MessageState) -> MessageState:
-    response = client.messages.create(
-        model="claude-haiku-4-5-20251001",
-        max_tokens=256,
-        messages=[{
-            "role": "user",
-            "content": CLASSIFY_PROMPT.format(
-                relationship=state.sender.relationship,
-                reply_rate=state.sender.historical_reply_rate,
-                content=state.content_text,
-                platform=state.platform.value
-            )
-        }]
-    )
-
-    result = json.loads(response.content[0].text)
-    state.ai_enrichment.priority_label = result["label"]
-    state.ai_enrichment.priority_score = result["priority_score"]
-    state.ai_enrichment.context_note += f" | {result['reasoning']}"
-    return state
+async def enrich_message(state, interaction_history, reply_count, total_messages) -> MessageState:
+    # Single API call → all enrichment fields populated on state
+    ...
 ```
 
-### 2.6 Draft Reply Agent
+**Fallback:** If the API call fails, a combined rule-based function handles relationship classification, urgency scoring, and sentiment detection using keyword matching. The system never goes offline.
+
+### 2.5 Draft Reply Agent
 
 ```python
 # agents/draft_reply.py
@@ -331,29 +258,30 @@ async def draft_reply(state: MessageState, thread_context: list[str]) -> str:
     return response.content[0].text.strip()
 ```
 
-### 2.7 Agent Pipeline Orchestrator
+### 2.6 Agent Pipeline Orchestrator
 
 ```python
 # agents/pipeline.py
-import asyncio
-
-async def run_pipeline(state: MessageState, db) -> MessageState:
+async def run_pipeline(state: MessageState, db, ws_manager=None) -> MessageState:
     """
     Runs the full agent pipeline for a single message.
-    Context, Classifier, and Sentiment run in parallel.
     """
-    # Step 1: Run enrichment agents in parallel
-    state, _, _ = await asyncio.gather(
-        build_context(state, db),
-        classify_and_rank(state),
-        detect_sentiment(state)
-    )
+    # Step 1: Fetch sender history from DB
+    interaction_history, reply_count, total_messages = await _get_sender_stats(db, ...)
 
-    # Step 2: Save to database
-    await db.upsert_message(state)
+    # Step 2: Single enrichment call (context + classification + sentiment)
+    state = await enrich_message(state, interaction_history, reply_count, total_messages)
 
-    # Step 3: Push to connected WebSocket clients
-    await ws_manager.push_to_user(state.sender.id, "new_message", state.dict())
+    # Step 3: Deterministic priority scoring
+    state = await compute_priority(state, thread_message_count, thread_recent_replies)
+
+    # Step 4: Persist to PostgreSQL
+    await _upsert_message(db, state)
+    await _upsert_contact(db, state)
+
+    # Step 5: Push to WebSocket clients
+    if ws_manager:
+        await ws_manager.push_to_user(state.user_id, "new_message", state.model_dump())
 
     return state
 ```
@@ -567,37 +495,7 @@ CREATE TABLE contacts (
 );
 ```
 
-### 4.2 ChromaDB (Vector Store)
-
-```python
-# core/vector_store.py
-import chromadb
-
-chroma = chromadb.Client()
-collection = chroma.get_or_create_collection("message_history")
-
-async def embed_message(state: MessageState):
-    collection.add(
-        documents=[state.content_text],
-        metadatas=[{
-            "user_id": state.sender.id,
-            "platform": state.platform.value,
-            "timestamp": state.timestamp,
-            "sender_id": state.sender.id
-        }],
-        ids=[state.id]
-    )
-
-async def get_similar_messages(query: str, user_id: str, n=10) -> list[str]:
-    results = collection.query(
-        query_texts=[query],
-        n_results=n,
-        where={"user_id": user_id}
-    )
-    return results['documents'][0]
-```
-
-### 4.3 Redis Caching Strategy
+### 4.2 Redis Caching Strategy
 
 | Cache Key | TTL | Contents |
 |---|---|---|
@@ -726,10 +624,6 @@ services:
     image: redis:7-alpine
     ports: ["6379:6379"]
 
-  chromadb:
-    image: chromadb/chroma:latest
-    ports: ["8001:8000"]
-
 volumes:
   pg_data:
 ```
@@ -740,7 +634,6 @@ volumes:
 # .env
 DATABASE_URL=postgresql://app:secret@postgres:5432/unifyinbox
 REDIS_URL=redis://redis:6379/0
-CHROMA_URL=http://chromadb:8000
 ANTHROPIC_API_KEY=sk-ant-...
 
 # Gmail
@@ -800,10 +693,6 @@ celery.conf.beat_schedule = {
         'task': 'core.tasks.check_snoozed_messages',
         'schedule': 60.0,           # every minute
     },
-    'decay-scores': {
-        'task': 'core.tasks.recalculate_priority_scores',
-        'schedule': 3600.0,         # every hour
-    },
 }
 ```
 
@@ -830,15 +719,12 @@ unifyinbox/
 │   │   ├── database.py            # SQLAlchemy async engine
 │   │   ├── redis.py               # Redis connection pool
 │   │   ├── celery.py              # Celery app + beat schedule
-│   │   ├── vector_store.py        # ChromaDB wrapper
 │   │   └── security.py            # JWT + token encryption
 │   ├── agents/
 │   │   ├── state.py               # Pydantic MessageState model
 │   │   ├── pipeline.py            # Orchestrates agent pipeline
-│   │   ├── context_builder.py
-│   │   ├── classifier.py
-│   │   ├── priority_ranker.py
-│   │   ├── sentiment.py
+│   │   ├── enrich.py              # Unified enrichment (context + classification + sentiment)
+│   │   ├── priority_ranker.py     # Deterministic scoring
 │   │   └── draft_reply.py
 │   ├── adapters/
 │   │   ├── base.py                # Abstract adapter interface
